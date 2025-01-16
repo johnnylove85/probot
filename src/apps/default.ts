@@ -1,18 +1,28 @@
-import path from 'path'
-import { Application } from '../application'
+import { resolve } from "node:path";
 
-export = (app: Application) => {
-  const route = app.route()
+import type { ApplicationFunctionOptions, Probot } from "../index.js";
+import { loadPackageJson } from "../helpers/load-package-json.js";
+import { probotView } from "../views/probot.js";
 
-  route.get('/probot', (req, res) => {
-    let pkg
-    try {
-      pkg = require(path.join(process.cwd(), 'package.json'))
-    } catch (e) {
-      pkg = {}
-    }
+export function defaultApp(
+  _app: Probot,
+  { getRouter, cwd = process.cwd() }: ApplicationFunctionOptions,
+) {
+  if (!getRouter) {
+    throw new Error("getRouter() is required for defaultApp");
+  }
 
-    res.render('probot.hbs', pkg)
-  })
-  route.get('/', (req, res, next) => res.redirect('/probot'))
+  const pkg = loadPackageJson(resolve(cwd, "package.json"));
+  const probotViewRendered = probotView({
+    name: pkg.name,
+    version: pkg.version,
+    description: pkg.description,
+  });
+  const router = getRouter();
+
+  router.get("/probot", (_req, res) => {
+    res.send(probotViewRendered);
+  });
+
+  router.get("/", (_req, res) => res.redirect("/probot"));
 }

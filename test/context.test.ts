@@ -1,492 +1,368 @@
-import fs = require('fs')
-import path = require('path')
+import fs from "node:fs";
+import path from "node:path";
 
-import Webhooks from '@octokit/webhooks'
-import { Context, MergeOptions } from '../src/context'
-import { GitHubAPI, OctokitError } from '../src/github'
+import type { EmitterWebhookEvent as WebhookEvent } from "@octokit/webhooks";
+import WebhookExamples from "@octokit/webhooks-examples";
+import type { WebhookDefinition } from "@octokit/webhooks-examples";
+import fetchMock from "fetch-mock";
+import { describe, expect, test, beforeEach, it, vi } from "vitest";
 
-import { createMockResponse } from './fixtures/octokit/mock-response'
+import { Context } from "../src/index.js";
+import { ProbotOctokit } from "../src/octokit/probot-octokit.js";
+import type { PushEvent } from "@octokit/webhooks-types";
 
-describe('Context', () => {
-  let event: Webhooks.WebhookEvent<any>
-  let context: Context
-  const notFoundError: OctokitError = {
-    message: 'An error occurred',
-    name: 'OctokitError',
-    status: 404
-  }
+const pushEventPayload = (
+  (WebhookExamples as unknown as WebhookDefinition[]).filter(
+    (event) => event.name === "push",
+  )[0] as WebhookDefinition<"push">
+).examples[0];
+const issuesEventPayload = (
+  (WebhookExamples as unknown as WebhookDefinition[]).filter(
+    (event) => event.name === "issues",
+  )[0] as WebhookDefinition<"issues">
+).examples[0];
+const pullRequestEventPayload = (
+  (WebhookExamples as unknown as WebhookDefinition[]).filter(
+    (event) => event.name === "pull_request",
+  )[0] as WebhookDefinition<"pull_request">
+).examples[0] as WebhookEvent<"pull_request">["payload"];
 
-  beforeEach(() => {
-    event = {
-      id: '123',
-      name: 'push',
-      payload: {
-        issue: { number: 4 },
-        repository: {
-          name: 'probot',
-          owner: { login: 'bkeepers' }
-        }
-      }
-    }
+describe("Context", () => {
+  let event: WebhookEvent<"push"> = {
+    id: "0",
+    name: "push",
+    payload: pushEventPayload,
+  };
+  let octokit = {
+    hook: {
+      before: vi.fn(),
+    },
+  };
+  let context: Context<"push"> = new Context<"push">(
+    event,
+    octokit as any,
+    {} as any,
+  );
 
-    context = new Context(event, {} as any, {} as any)
-  })
+  it("inherits the payload", () => {
+    expect(context.payload).toBe(event.payload);
+  });
 
-  it('inherits the payload', () => {
-    expect(context.payload).toBe(event.payload)
-  })
+  describe("repo", () => {
+    let event: WebhookEvent<"push">;
+    let context: Context<"push">;
+    beforeEach(() => {
+      event = {
+        id: "123",
+        name: "push",
+        payload: pushEventPayload,
+      };
+      let octokit = {
+        hook: {
+          before: vi.fn(),
+        },
+      };
 
-  it('aliases the event name', () => {
-    expect(context.name).toEqual('push')
-    expect(context.event).toEqual('push')
-  })
+      context = new Context<"push">(event, octokit as any, {} as any);
+    });
 
-  describe('repo', () => {
-    it('returns attributes from repository payload', () => {
-      expect(context.repo()).toEqual({ owner: 'bkeepers', repo: 'probot' })
-    })
+    it("returns attributes from repository payload", () => {
+      expect(context.repo()).toEqual({
+        owner: "Codertocat",
+        repo: "Hello-World",
+      });
+    });
 
-    it('merges attributes', () => {
+    it("merges attributes", () => {
       expect(context.repo({ foo: 1, bar: 2 })).toEqual({
-        bar: 2, foo: 1, owner: 'bkeepers', repo: 'probot'
-      })
-    })
+        bar: 2,
+        foo: 1,
+        owner: "Codertocat",
+        repo: "Hello-World",
+      });
+    });
 
-    it('overrides repo attributes', () => {
-      expect(context.repo({ owner: 'muahaha' })).toEqual({
-        owner: 'muahaha', repo: 'probot'
-      })
-    })
+    it("overrides repo attributes", () => {
+      expect(context.repo({ owner: "muahaha" })).toEqual({
+        owner: "muahaha",
+        repo: "Hello-World",
+      });
+    });
 
     // The `repository` object on the push event has a different format than the other events
-    // https://developer.github.com/v3/activity/events/types/#pushevent
-    it('properly handles the push event', () => {
-      event.payload = require('./fixtures/webhook/push')
+    // https://docs.github.com/en/developers/webhooks-and-events/webhook-events-and-payloads#push
+    it("properly handles the push event", () => {
+      event.payload = require("./fixtures/webhook/push") as PushEvent;
+      let octokit = {
+        hook: {
+          before: vi.fn(),
+        },
+      };
 
-      context = new Context(event, {} as any, {} as any)
-      expect(context.repo()).toEqual({ owner: 'bkeepers-inc', repo: 'test' })
-    })
+      context = new Context<"push">(event, octokit as any, {} as any);
+      expect(context.repo()).toEqual({ owner: "bkeepers-inc", repo: "test" });
+    });
 
-    it('return error for context.repo() when repository doesn\'t exist', () => {
-      delete context.payload.repository
+    it("return error for context.repo() when repository doesn't exist", () => {
+      event = {
+        id: "123",
+        name: "push",
+        payload: { ...pushEventPayload, repository: undefined as any },
+      };
+      let octokit = {
+        hook: {
+          before: vi.fn(),
+        },
+      };
+
+      context = new Context<"push">(event, octokit as any, {} as any);
       try {
-        context.repo()
+        context.repo();
       } catch (e) {
-        expect(e.message).toMatch('context.repo() is not supported')
+        expect((e as Error).message).toMatch(
+          "context.repo() is not supported for this webhook event.",
+        );
       }
-    })
-  })
+    });
+  });
 
-  describe('issue', () => {
-    it('returns attributes from repository payload', () => {
-      expect(context.issue()).toEqual({ owner: 'bkeepers', repo: 'probot', number: 4 })
-    })
+  describe("issue", () => {
+    let event: WebhookEvent<"issues">;
+    let context: Context<"issues">;
+    beforeEach(() => {
+      event = {
+        id: "123",
+        name: "issues",
+        payload: issuesEventPayload,
+      };
+      let octokit = {
+        hook: {
+          before: vi.fn(),
+        },
+      };
 
-    it('merges attributes', () => {
+      context = new Context<"issues">(event, octokit as any, {} as any);
+    });
+    it("returns attributes from repository payload", () => {
+      expect(context.issue()).toEqual({
+        owner: "Codertocat",
+        repo: "Hello-World",
+        issue_number: 1,
+      });
+    });
+
+    it("merges attributes", () => {
       expect(context.issue({ foo: 1, bar: 2 })).toEqual({
-        bar: 2, foo: 1, number: 4, owner: 'bkeepers', repo: 'probot'
-      })
-    })
+        bar: 2,
+        foo: 1,
+        issue_number: 1,
+        owner: "Codertocat",
+        repo: "Hello-World",
+      });
+    });
 
-    it('overrides repo attributes', () => {
-      expect(context.issue({ owner: 'muahaha', number: 5 })).toEqual({
-        number: 5, owner: 'muahaha', repo: 'probot'
-      })
-    })
-  })
+    it("overrides repo attributes", () => {
+      expect(context.issue({ owner: "muahaha", issue_number: 5 })).toEqual({
+        issue_number: 5,
+        owner: "muahaha",
+        repo: "Hello-World",
+      });
+    });
+  });
 
-  describe('config', () => {
-    let github: GitHubAPI
+  describe("pullRequest", () => {
+    let event: WebhookEvent<"pull_request">;
+    let context: Context<"pull_request">;
+    beforeEach(() => {
+      event = {
+        id: "123",
+        name: "pull_request",
+        payload: pullRequestEventPayload,
+      };
+      let octokit = {
+        hook: {
+          before: vi.fn(),
+        },
+      };
 
-    function responseFromString (content: string) {
-      return createMockResponse({
-        content: Buffer.from(content).toString('base64')
-      }) as ReturnType<typeof github.repos.getContents>
-    }
+      context = new Context<"pull_request">(event, octokit as any, {} as any);
+    });
+    it("returns attributes from repository payload", () => {
+      expect(context.pullRequest()).toEqual({
+        owner: "Codertocat",
+        repo: "Hello-World",
+        pull_number: 2,
+      });
+    });
 
-    function responseFromConfig (fileName: string) {
-      const configPath = path.join(__dirname, 'fixtures', 'config', fileName)
-      const content = fs.readFileSync(configPath, { encoding: 'utf8' })
-      return responseFromString(content)
+    it("merges attributes", () => {
+      expect(context.pullRequest({ foo: 1, bar: 2 })).toEqual({
+        bar: 2,
+        foo: 1,
+        owner: "Codertocat",
+        pull_number: 2,
+        repo: "Hello-World",
+      });
+    });
+
+    it("overrides repo attributes", () => {
+      expect(context.pullRequest({ owner: "muahaha", pull_number: 5 })).toEqual(
+        {
+          owner: "muahaha",
+          pull_number: 5,
+          repo: "Hello-World",
+        },
+      );
+    });
+  });
+
+  describe("config", () => {
+    let octokit: ProbotOctokit;
+
+    function getConfigFile(fileName: string) {
+      const configPath = path.join(__dirname, "fixtures", "config", fileName);
+      return fs.readFileSync(configPath, { encoding: "utf8" });
     }
 
     beforeEach(() => {
-      github = GitHubAPI()
-      context = new Context(event, github, {} as any)
-    })
+      octokit = new ProbotOctokit({
+        retry: { enabled: false },
+        throttle: { enabled: false },
+      });
+      // @ts-ignore - Expression produces a union type that is too complex to represent
+      context = new Context(event, octokit, {} as any);
+    });
 
-    it('gets a valid configuration', async () => {
-      jest.spyOn(github.repos, 'getContents').mockReturnValue(responseFromConfig('basic.yml'))
-      const config = await context.config('test-file.yml')
+    it("gets a valid configuration", async () => {
+      const fetch = fetchMock
+        .sandbox()
+        .getOnce(
+          "https://api.github.com/repos/Codertocat/Hello-World/contents/.github%2Ftest-file.yml",
+          getConfigFile("basic.yml"),
+        );
 
-      expect(github.repos.getContents).toHaveBeenCalledTimes(1)
-      expect(github.repos.getContents).toHaveBeenCalledWith({
-        owner: 'bkeepers',
-        path: '.github/test-file.yml',
-        repo: 'probot'
-      })
+      const octokit = new ProbotOctokit({
+        retry: { enabled: false },
+        throttle: { enabled: false },
+        request: {
+          fetch,
+        },
+      });
+      const context = new Context(event, octokit, {} as any);
+
+      const config = await context.config("test-file.yml");
       expect(config).toEqual({
         bar: 7,
         baz: 11,
-        foo: 5
-      })
-    })
+        foo: 5,
+      });
+    });
 
-    it('returns null when the file and base repository are missing', async () => {
-      jest.spyOn(github.repos, 'getContents').mockReturnValue(Promise.reject(notFoundError))
+    it("returns null when the file and base repository are missing", async () => {
+      const NOT_FOUND_RESPONSE = {
+        status: 404,
+        body: {
+          message: "Not Found",
+          documentation_url:
+            "https://docs.github.com/rest/reference/repos#get-repository-content",
+        },
+      };
 
-      expect(await context.config('test-file.yml')).toBe(null)
-      expect(github.repos.getContents).toHaveBeenCalledWith({
-        owner: 'bkeepers',
-        path: '.github/test-file.yml',
-        repo: 'probot'
-      })
-      expect(github.repos.getContents).toHaveBeenCalledWith({
-        owner: 'bkeepers',
-        path: '.github/test-file.yml',
-        repo: '.github'
-      })
-    })
+      const fetch = fetchMock
+        .sandbox()
+        .getOnce(
+          "https://api.github.com/repos/Codertocat/Hello-World/contents/.github%2Ftest-file.yml",
+          NOT_FOUND_RESPONSE,
+        )
+        .getOnce(
+          "https://api.github.com/repos/Codertocat/.github/contents/.github%2Ftest-file.yml",
+          NOT_FOUND_RESPONSE,
+        );
 
-    it('returns the default config when the file and base repository are missing and default config is passed', async () => {
-      jest.spyOn(github.repos, 'getContents').mockReturnValue(Promise.reject(notFoundError))
-      const defaultConfig = {
-        bar: 7,
-        baz: 11,
-        foo: 5
-      }
-      const contents = await context.config('test-file.yml', defaultConfig)
-      expect(contents).toEqual(defaultConfig)
-    })
+      const octokit = new ProbotOctokit({
+        retry: { enabled: false },
+        throttle: { enabled: false },
+        request: {
+          fetch,
+        },
+      });
+      const context = new Context(event, octokit, {} as any);
 
-    it('merges the default config', async () => {
-      jest.spyOn(github.repos, 'getContents').mockReturnValue(responseFromConfig('basic.yml'))
+      expect(await context.config("test-file.yml")).toBe(null);
+    });
 
-      const config = await context.config('test-file.yml', { bar: 1, boa: 6 })
+    it("accepts deepmerge options", async () => {
+      const fetch = fetchMock
+        .sandbox()
+        .getOnce(
+          "https://api.github.com/repos/Codertocat/Hello-World/contents/.github%2Ftest-file.yml",
+          "foo:\n  - name: master\n    shouldChange: changed\n_extends: .github",
+        )
+        .getOnce(
+          "https://api.github.com/repos/Codertocat/.github/contents/.github%2Ftest-file.yml",
+          "foo:\n  - name: develop\n  - name: master\n    shouldChange: should",
+        );
 
-      expect(github.repos.getContents).toHaveBeenCalledTimes(1)
-      expect(github.repos.getContents).toHaveBeenCalledWith({
-        owner: 'bkeepers',
-        path: '.github/test-file.yml',
-        repo: 'probot'
-      })
-      expect(config).toEqual({
-        bar: 7,
-        baz: 11,
-        boa: 6,
-        foo: 5
-      })
-    })
+      const octokit = new ProbotOctokit({
+        retry: { enabled: false },
+        throttle: { enabled: false },
+        request: {
+          fetch,
+        },
+      });
+      const context = new Context(event, octokit, {} as any);
 
-    it('merges a base config', async () => {
-      jest.spyOn(github.repos, 'getContents')
-        .mockReturnValueOnce(responseFromString('boa: 6\nfoo: 0\n_extends: base'))
-        .mockReturnValueOnce(responseFromConfig('basic.yml'))
+      const customMerge = vi.fn(
+        (_target: any[], _source: any[], _options: any): any[] => [],
+      );
+      await context.config("test-file.yml", {}, { arrayMerge: customMerge });
+      expect(customMerge).toHaveBeenCalled();
+    });
 
-      const config = await context.config('test-file.yml', { bar: 1, boa: 6 })
+    it("sets x-github-delivery header to event id", async () => {
+      const fetch = fetchMock.sandbox().getOnce((_url, { headers }) => {
+        expect(
+          // @ts-expect-error
+          headers["x-github-delivery"],
+        ).toBe("0");
+        return true;
+      }, getConfigFile("basic.yml"));
 
-      expect(github.repos.getContents).toHaveBeenCalledWith({
-        owner: 'bkeepers',
-        path: '.github/test-file.yml',
-        repo: 'probot'
-      })
-      expect(github.repos.getContents).toHaveBeenCalledWith({
-        owner: 'bkeepers',
-        path: '.github/test-file.yml',
-        repo: 'base'
-      })
-      expect(config).toEqual({
-        bar: 7,
-        baz: 11,
-        boa: 6,
-        foo: 0
-      })
-    })
+      const octokit = new ProbotOctokit({
+        retry: { enabled: false },
+        throttle: { enabled: false },
+        request: {
+          fetch,
+        },
+      });
+      const context = new Context(event, octokit, {} as any);
+      await context.config("test-file.yml");
+    });
+  });
 
-    it('merges the base and default config', async () => {
-      jest.spyOn(github.repos, 'getContents')
-        .mockReturnValueOnce(responseFromString('boa: 6\nfoo: 0\n_extends: base'))
-        .mockReturnValueOnce(responseFromConfig('basic.yml'))
+  describe("isBot", () => {
+    test("returns true if sender is a bot", () => {
+      event.payload.sender.type = "Bot";
+      let octokit = {
+        hook: {
+          before: vi.fn(),
+        },
+      };
+      context = new Context(event, octokit as any, {} as any);
 
-      const config = await context.config('test-file.yml', { bar: 1, new: true })
+      expect(context.isBot).toBe(true);
+    });
 
-      expect(github.repos.getContents).toHaveBeenCalledWith({
-        owner: 'bkeepers',
-        path: '.github/test-file.yml',
-        repo: 'probot'
-      })
-      expect(github.repos.getContents).toHaveBeenCalledWith({
-        owner: 'bkeepers',
-        path: '.github/test-file.yml',
-        repo: 'base'
-      })
-      expect(config).toEqual({
-        bar: 7,
-        baz: 11,
-        boa: 6,
-        foo: 0,
-        new: true
-      })
-    })
+    test("returns false if sender is not a bot", () => {
+      event.payload.sender.type = "User";
+      let octokit = {
+        hook: {
+          before: vi.fn(),
+        },
+      };
+      context = new Context(event, octokit as any, {} as any);
 
-    it('merges a base config from another organization', async () => {
-      jest.spyOn(github.repos, 'getContents')
-        .mockReturnValueOnce(responseFromString('boa: 6\nfoo: 0\n_extends: other/base'))
-        .mockReturnValueOnce(responseFromConfig('basic.yml'))
-
-      const config = await context.config('test-file.yml')
-
-      expect(github.repos.getContents).toHaveBeenCalledWith({
-        owner: 'bkeepers',
-        path: '.github/test-file.yml',
-        repo: 'probot'
-      })
-      expect(github.repos.getContents).toHaveBeenCalledWith({
-        owner: 'other',
-        path: '.github/test-file.yml',
-        repo: 'base'
-      })
-      expect(config).toEqual({
-        bar: 7,
-        baz: 11,
-        boa: 6,
-        foo: 0
-      })
-    })
-
-    it('merges a base config with a custom path', async () => {
-      jest.spyOn(github.repos, 'getContents')
-        .mockReturnValueOnce(responseFromString('boa: 6\nfoo: 0\n_extends: base:test.yml'))
-        .mockReturnValueOnce(responseFromConfig('basic.yml'))
-
-      const config = await context.config('test-file.yml')
-
-      expect(github.repos.getContents).toHaveBeenCalledWith({
-        owner: 'bkeepers',
-        path: '.github/test-file.yml',
-        repo: 'probot'
-      })
-      expect(github.repos.getContents).toHaveBeenCalledWith({
-        owner: 'bkeepers',
-        path: 'test.yml',
-        repo: 'base'
-      })
-      expect(config).toEqual({
-        bar: 7,
-        baz: 11,
-        boa: 6,
-        foo: 0
-      })
-    })
-
-    it('ignores a missing base config', async () => {
-      jest.spyOn(github.repos, 'getContents')
-        .mockReturnValueOnce(responseFromString('boa: 6\nfoo: 0\n_extends: base'))
-        .mockReturnValueOnce(Promise.reject(notFoundError))
-
-      const config = await context.config('test-file.yml')
-
-      expect(github.repos.getContents).toHaveBeenCalledWith({
-        owner: 'bkeepers',
-        path: '.github/test-file.yml',
-        repo: 'probot'
-      })
-      expect(github.repos.getContents).toHaveBeenCalledWith({
-        owner: 'bkeepers',
-        path: '.github/test-file.yml',
-        repo: 'base'
-      })
-      expect(config).toEqual({
-        boa: 6,
-        foo: 0
-      })
-    })
-
-    it('throws when the configuration file is malformed', async () => {
-      jest.spyOn(github.repos, 'getContents').mockReturnValue(responseFromConfig('malformed.yml'))
-
-      let e
-      let contents
-      try {
-        contents = await context.config('test-file.yml')
-      } catch (err) {
-        e = err
-      }
-
-      expect(contents).toBeUndefined()
-      expect(e).toBeDefined()
-      expect(e.message).toMatch(/^end of the stream or a document separator/)
-    })
-
-    it('throws when loading unsafe yaml', async () => {
-      jest.spyOn(github.repos, 'getContents').mockReturnValue(responseFromConfig('evil.yml'))
-
-      let e
-      let config
-      try {
-        config = await context.config('evil.yml')
-      } catch (err) {
-        e = err
-      }
-
-      expect(config).toBeUndefined()
-      expect(e).toBeDefined()
-      expect(e.message).toMatch(/unknown tag/)
-    })
-
-    it('throws on a non-string base', async () => {
-      jest.spyOn(github.repos, 'getContents')
-        .mockReturnValue(responseFromString('boa: 6\nfoo: 0\n_extends: { nope }'))
-
-      let e
-      let config
-      try {
-        config = await context.config('test-file.yml')
-      } catch (err) {
-        e = err
-      }
-
-      expect(config).toBeUndefined()
-      expect(e).toBeDefined()
-      expect(e.message).toMatch(/invalid/i)
-    })
-
-    it('throws on an invalid base', async () => {
-      jest.spyOn(github.repos, 'getContents')
-        .mockReturnValue(responseFromString('boa: 6\nfoo: 0\n_extends: "nope:"'))
-
-      let e
-      let config
-      try {
-        config = await context.config('test-file.yml')
-      } catch (err) {
-        e = err
-      }
-
-      expect(config).toBeUndefined()
-      expect(e).toBeDefined()
-      expect(e.message).toMatch(/nope:/)
-    })
-
-    it('returns an empty object when the file is empty', async () => {
-      jest.spyOn(github.repos, 'getContents').mockReturnValue(responseFromConfig('empty.yml'))
-
-      const contents = await context.config('test-file.yml')
-
-      expect(github.repos.getContents).toHaveBeenCalledTimes(1)
-      expect(contents).toEqual({})
-    })
-
-    it('overwrites default config settings', async () => {
-      jest.spyOn(github.repos, 'getContents').mockReturnValue(responseFromConfig('basic.yml'))
-      const config = await context.config('test-file.yml', { foo: 10 })
-
-      expect(github.repos.getContents).toHaveBeenCalledTimes(1)
-      expect(config).toEqual({
-        bar: 7,
-        baz: 11,
-        foo: 5
-      })
-    })
-
-    it('uses default settings to fill in missing options', async () => {
-      jest.spyOn(github.repos, 'getContents').mockReturnValue(responseFromConfig('missing.yml'))
-      const config = await context.config('test-file.yml', { bar: 7 })
-
-      expect(github.repos.getContents).toHaveBeenCalledTimes(1)
-      expect(config).toEqual({
-        bar: 7,
-        baz: 11,
-        foo: 5
-      })
-    })
-
-    it('uses the .github directory on a .github repo', async () => {
-      jest.spyOn(github.repos, 'getContents')
-        .mockReturnValueOnce(responseFromString('foo: foo\n_extends: .github'))
-        .mockReturnValueOnce(responseFromConfig('basic.yml'))
-      const config = await context.config('test-file.yml')
-
-      expect(github.repos.getContents).toHaveBeenCalledWith({
-        owner: 'bkeepers',
-        path: '.github/test-file.yml',
-        repo: 'probot'
-      })
-      expect(github.repos.getContents).toHaveBeenCalledWith({
-        owner: 'bkeepers',
-        path: '.github/test-file.yml',
-        repo: '.github'
-      })
-      expect(config).toEqual({
-        bar: 7,
-        baz: 11,
-        foo: 'foo'
-      })
-    })
-
-    it('defaults to .github repo if no config found', async () => {
-      jest.spyOn(github.repos, 'getContents')
-        .mockReturnValueOnce(Promise.reject(notFoundError))
-        .mockReturnValueOnce(responseFromConfig('basic.yml'))
-      const config = await context.config('test-file.yml')
-
-      expect(github.repos.getContents).toHaveBeenCalledWith({
-        owner: 'bkeepers',
-        path: '.github/test-file.yml',
-        repo: 'probot'
-      })
-      expect(github.repos.getContents).toHaveBeenCalledWith({
-        owner: 'bkeepers',
-        path: '.github/test-file.yml',
-        repo: '.github'
-      })
-      expect(config).toEqual({
-        bar: 7,
-        baz: 11,
-        foo: 5
-      })
-    })
-
-    it('deep merges the base config', async () => {
-      jest.spyOn(github.repos, 'getContents')
-        .mockReturnValueOnce(responseFromString('obj:\n  foo:\n  - name: master\n_extends: .github'))
-        .mockReturnValueOnce(responseFromString('obj:\n  foo:\n  - name: develop'))
-      const config = await context.config('test-file.yml')
-
-      expect(config).toEqual({
-        obj: {
-          foo: [
-            { name: 'develop' },
-            { name: 'master' }
-          ]
-        }
-      })
-    })
-
-    it('accepts deepmerge options', async () => {
-      jest.spyOn(github.repos, 'getContents')
-        .mockReturnValueOnce(responseFromString('foo:\n  - name: master\n    shouldChange: changed\n_extends: .github'))
-        .mockReturnValueOnce(responseFromString('foo:\n  - name: develop\n  - name: master\n    shouldChange: should'))
-
-      const customMerge = jest.fn((_target: any[], _source: any[], _options: MergeOptions | undefined): any[] => [])
-      await context.config('test-file.yml', {}, { arrayMerge: customMerge })
-      expect(customMerge).toHaveBeenCalled()
-    })
-  })
-
-  describe('isBot', () => {
-    test('returns true if sender is a bot', () => {
-      event.payload.sender = { type: 'Bot' }
-      context = new Context(event, {} as any, {} as any)
-
-      expect(context.isBot).toBe(true)
-    })
-
-    test('returns false if sender is not a bot', () => {
-      event.payload.sender = { type: 'User' }
-      context = new Context(event, {} as any, {} as any)
-
-      expect(context.isBot).toBe(false)
-    })
-  })
-})
+      expect(context.isBot).toBe(false);
+    });
+  });
+});

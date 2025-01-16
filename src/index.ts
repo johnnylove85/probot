@@ -1,243 +1,154 @@
-// tslint:disable-next-line: no-var-requires
-require('dotenv').config()
+export type { Logger } from "pino";
 
-import { App as OctokitApp } from '@octokit/app'
-import { Octokit } from '@octokit/rest'
-import Webhooks from '@octokit/webhooks'
-import Bottleneck from 'bottleneck'
-import Logger from 'bunyan'
-import express from 'express'
-import Redis from 'ioredis'
+export { Context } from "./context.js";
 
-import { Server } from 'http'
-import { Application } from './application'
-import setupApp from './apps/setup'
-import { createDefaultCache } from './cache'
-import { Context } from './context'
-import { GitHubAPI, ProbotOctokit } from './github'
-import { logger } from './logger'
-import { logRequestErrors } from './middleware/log-request-errors'
-import { findPrivateKey } from './private-key'
-import { resolve } from './resolver'
-import { createServer } from './server'
-import { createWebhookProxy } from './webhook-proxy'
+export { Probot } from "./probot.js";
+export { Server } from "./server/server.js";
+export { ProbotOctokit } from "./octokit/probot-octokit.js";
+export { run } from "./run.js";
+export { createNodeMiddleware } from "./create-node-middleware.js";
+export { createProbot } from "./create-probot.js";
 
-const cache = createDefaultCache()
+/** NOTE: exported types might change at any point in time */
+export type {
+  Options,
+  ApplicationFunction,
+  ApplicationFunctionOptions,
+} from "./types.js";
 
-// tslint:disable:no-var-requires
-const defaultAppFns: ApplicationFunction[] = [
-  require('./apps/default'),
-  require('./apps/sentry'),
-  require('./apps/stats')
-]
-// tslint:enable:no-var-requires
+declare global {
+  namespace NodeJS {
+    interface ProcessEnv {
+      /**
+       * The App ID assigned to your GitHub App.
+       * @example '1234'
+       */
+      APP_ID?: string;
 
-export class Probot {
-  public static async run (appFn: ApplicationFunction | string[]) {
-    const pkgConf = require('pkg-conf')
-    const program = require('commander')
+      /**
+       * By default, logs are formatted for readability in development. You can
+       * set this to `json` in order to disable the formatting.
+       */
+      LOG_FORMAT?: "json" | "pretty";
 
-    const readOptions = (): Options => {
-      if (Array.isArray(appFn)) {
-        program
-          .usage('[options] <apps...>')
-          .option('-p, --port <n>', 'Port to start the server on', process.env.PORT || 3000)
-          .option('-W, --webhook-proxy <url>', 'URL of the webhook proxy service.`', process.env.WEBHOOK_PROXY_URL)
-          .option('-w, --webhook-path <path>', 'URL path which receives webhooks. Ex: `/webhook`', process.env.WEBHOOK_PATH)
-          .option('-a, --app <id>', 'ID of the GitHub App', process.env.APP_ID)
-          .option('-s, --secret <secret>', 'Webhook secret of the GitHub App', process.env.WEBHOOK_SECRET)
-          .option('-P, --private-key <file>', 'Path to certificate of the GitHub App', process.env.PRIVATE_KEY_PATH)
-          .parse(appFn)
+      /**
+       * The verbosity of logs to show when running your app, which can be
+       * `fatal`, `error`, `warn`, `info`, `debug`, `trace` or `silent`.
+       * @default 'info'
+       */
+      LOG_LEVEL?:
+        | "trace"
+        | "debug"
+        | "info"
+        | "warn"
+        | "error"
+        | "fatal"
+        | "silent";
 
-        return {
-          cert: findPrivateKey(program.privateKey) || undefined,
-          id: program.app,
-          port: program.port,
-          secret: program.secret,
-          webhookPath: program.webhookPath,
-          webhookProxy: program.webhookProxy
-        }
-      }
-      const privateKey = findPrivateKey()
-      return {
-        cert: (privateKey && privateKey.toString()) || undefined,
-        id: Number(process.env.APP_ID),
-        port: Number(process.env.PORT) || 3000,
-        secret: process.env.WEBHOOK_SECRET,
-        webhookPath: process.env.WEBHOOK_PATH,
-        webhookProxy: process.env.WEBHOOK_PROXY_URL
-      }
+      /**
+       * By default, when using the `json` format, the level printed in the log
+       * records is an int (`10`, `20`, ..). This option tells the logger to
+       * print level as a string: `{"level": "info"}`. Default `false`
+       */
+      LOG_LEVEL_IN_STRING?: "true" | "false";
+
+      /**
+       * Only relevant when `LOG_FORMAT` is set to `json`. Sets the json key for the log message.
+       * @default 'msg'
+       */
+      LOG_MESSAGE_KEY?: string;
+
+      /**
+       * The organization where you want to register the app in the app
+       * creation manifest flow. If set, the app is registered for an
+       * organization
+       * (https://github.com/organizations/ORGANIZATION/settings/apps/new), if
+       * not set, the GitHub app would be registered for the user account
+       * (https://github.com/settings/apps/new).
+       */
+      GH_ORG?: string;
+
+      /**
+       * The hostname of your GitHub Enterprise instance.
+       * @example github.mycompany.com
+       */
+      GHE_HOST?: string;
+
+      /**
+       * The protocol of your GitHub Enterprise instance. Defaults to HTTPS.
+       * Do not change unless you are certain.
+       * @default 'https'
+       */
+      GHE_PROTOCOL?: string;
+
+      /**
+       * The contents of the private key for your GitHub App. If you're unable
+       * to use multiline environment variables, use base64 encoding to
+       * convert the key to a single line string. See the Deployment docs for
+       * provider specific usage.
+       */
+      PRIVATE_KEY?: string;
+
+      /**
+       * When using the `PRIVATE_KEY_PATH` environment variable, set it to the
+       * path of the `.pem` file that you downloaded from your GitHub App registration.
+       * @example 'path/to/key.pem'
+       */
+      PRIVATE_KEY_PATH?: string;
+      /**
+       * The port to start the local server on.
+       * @default '3000'
+       */
+      PORT?: string;
+
+      /**
+       * The host to start the local server on.
+       */
+      HOST?: string;
+
+      /**
+       * Set to a `redis://` url as connection option for
+       * [ioredis](https://github.com/luin/ioredis#connect-to-redis) in order
+       * to enable
+       * [cluster support for request throttling](https://github.com/octokit/plugin-throttling.js#clustering).
+       * @example 'redis://:secret@redis-123.redislabs.com:12345/0'
+       */
+      REDIS_URL?: string;
+
+      /**
+       * Set to a [Sentry](https://sentry.io/) DSN to report all errors thrown
+       * by your app.
+       * @example 'https://1234abcd@sentry.io/12345'
+       */
+      SENTRY_DSN?: string;
+
+      /**
+       * The URL path which will receive webhooks.
+       * @default '/api/github/webhooks'
+       */
+      WEBHOOK_PATH?: string;
+
+      /**
+       * Allows your local development environment to receive GitHub webhook
+       * events. Go to https://smee.io/new to get started.
+       * @example 'https://smee.io/your-custom-url'
+       */
+      WEBHOOK_PROXY_URL?: string;
+
+      /**
+       * **Required**
+       * The webhook secret used when creating a GitHub App. 'development' is
+       * used as a default, but the value in `.env` needs to match the value
+       * configured in your App settings on GitHub. Note: GitHub marks this
+       * value as optional, but for optimal security it's required for Probot
+       * apps.
+       *
+       * @example 'development'
+       * @default 'development'
+       */
+      WEBHOOK_SECRET?: string;
+
+      NODE_ENV?: string;
     }
-
-    const options = readOptions()
-    const probot = new Probot(options)
-    if (!options.id || !options.cert) {
-      if (process.env.NODE_ENV === 'production') {
-        if (!options.id) {
-          throw new Error(
-            'Application ID is missing, and is required to run in production mode. ' +
-            'To resolve, ensure the APP_ID environment variable is set.'
-          )
-        } else if (!options.cert) {
-          throw new Error(
-            'Certificate is missing, and is required to run in production mode. ' +
-            'To resolve, ensure either the PRIVATE_KEY or PRIVATE_KEY_PATH environment variable is set and contains a valid certificate'
-          )
-        }
-      }
-      probot.load(setupApp)
-    } else if (Array.isArray(appFn)) {
-      const pkg = await pkgConf('probot')
-      probot.setup(program.args.concat(pkg.apps || pkg.plugins || []))
-    } else {
-      probot.load(appFn)
-    }
-    probot.start()
-
-    return probot
-  }
-
-  public server: express.Application
-  public httpServer?: Server
-  public webhook: Webhooks
-  public logger: Logger
-  // These 3 need to be public for the tests to work.
-  public options: Options
-  public app?: OctokitApp
-  public throttleOptions: any
-
-  private apps: Application[]
-  private githubToken?: string
-  private Octokit: Octokit.Static
-
-  constructor (options: Options) {
-    options.webhookPath = options.webhookPath || '/'
-    options.secret = options.secret || 'development'
-    this.options = options
-    this.logger = logger
-    this.apps = []
-    this.webhook = new Webhooks({
-      path: options.webhookPath,
-      secret: options.secret
-    })
-    this.githubToken = options.githubToken
-    this.Octokit = options.Octokit || ProbotOctokit
-    if (this.options.id) {
-      if (process.env.GHE_HOST && /^https?:\/\//.test(process.env.GHE_HOST)) {
-        throw new Error('Your \`GHE_HOST\` environment variable should not begin with https:// or http://')
-      }
-
-      this.app = new OctokitApp({
-        baseUrl: process.env.GHE_HOST && `${process.env.GHE_PROTOCOL || 'https'}://${process.env.GHE_HOST}/api/v3`,
-        id: options.id as number,
-        privateKey: options.cert as string
-      })
-    }
-    this.server = createServer({ webhook: (this.webhook as any).middleware, logger })
-
-    // Log all received webhooks
-    this.webhook.on('*', async (event: Webhooks.WebhookEvent<any>) => {
-      await this.receive(event)
-    })
-
-    // Log all webhook errors
-    this.webhook.on('error', this.errorHandler)
-
-    if (options.redisConfig || process.env.REDIS_URL) {
-      let client
-      if (options.redisConfig) {
-        client = new Redis(options.redisConfig)
-      } else if (process.env.REDIS_URL) {
-        client = new Redis(process.env.REDIS_URL)
-      }
-      const connection = new Bottleneck.IORedisConnection({ client })
-      connection.on('error', this.logger.error)
-
-      this.throttleOptions = {
-        Bottleneck,
-        connection
-      }
-    }
-  }
-
-  public errorHandler (err: Error) {
-    const errMessage = (err.message || '').toLowerCase()
-    if (errMessage.includes('x-hub-signature')) {
-      logger.error({ err }, 'Go to https://github.com/settings/apps/YOUR_APP and verify that the Webhook secret matches the value of the WEBHOOK_SECRET environment variable.')
-    } else if (errMessage.includes('pem') || errMessage.includes('json web token')) {
-      logger.error({ err }, 'Your private key (usually a .pem file) is not correct. Go to https://github.com/settings/apps/YOUR_APP and generate a new PEM file. If you\'re deploying to Now, visit https://probot.github.io/docs/deployment/#now.')
-    } else {
-      logger.error(err)
-    }
-  }
-
-  public receive (event: Webhooks.WebhookEvent<any>) {
-    this.logger.debug({ event }, 'Webhook received')
-    return Promise.all(this.apps.map(app => app.receive(event)))
-  }
-
-  public load (appFn: string | ApplicationFunction) {
-    if (typeof appFn === 'string') {
-      appFn = resolve(appFn) as ApplicationFunction
-    }
-    const app = new Application({
-      Octokit: this.Octokit,
-      app: this.app as OctokitApp,
-      cache,
-      githubToken: this.githubToken,
-      throttleOptions: this.throttleOptions
-    })
-
-    // Connect the router from the app to the server
-    this.server.use(app.router)
-
-    // Initialize the ApplicationFunction
-    app.load(appFn)
-    this.apps.push(app)
-
-    return app
-  }
-
-  public setup (appFns: Array<string | ApplicationFunction>) {
-    // Log all unhandled rejections
-    (process as NodeJS.EventEmitter).on('unhandledRejection', this.errorHandler)
-
-    // Load the given appFns along with the default ones
-    appFns.concat(defaultAppFns).forEach(appFn => this.load(appFn))
-
-    // Register error handler as the last middleware
-    this.server.use(logRequestErrors)
-  }
-
-  public start () {
-    if (this.options.webhookProxy) {
-      createWebhookProxy({
-        logger,
-        path: this.options.webhookPath,
-        port: this.options.port,
-        url: this.options.webhookProxy
-      })
-    }
-
-    this.httpServer = this.server.listen(this.options.port)
-    logger.info('Listening on http://localhost:' + this.options.port)
   }
 }
-
-export const createProbot = (options: Options) => new Probot(options)
-
-export type ApplicationFunction = (app: Application) => void
-
-export interface Options {
-  webhookPath?: string
-  secret?: string,
-  id?: number,
-  cert?: string,
-  githubToken?: string,
-  webhookProxy?: string,
-  port?: number,
-  redisConfig?: Redis.RedisOptions,
-  Octokit?: Octokit.Static
-}
-
-export { Logger, Context, Application, Octokit, GitHubAPI }

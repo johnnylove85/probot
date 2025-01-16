@@ -25,15 +25,9 @@
         "email": "noreply@github.com",
         "username": "web-flow"
       },
-      "added": [
-
-      ],
-      "removed": [
-
-      ],
-      "modified": [
-        "README.md"
-      ]
+      "added": [],
+      "removed": [],
+      "modified": ["README.md"]
     }
   ],
   "head_commit": {
@@ -53,15 +47,9 @@
       "email": "noreply@github.com",
       "username": "web-flow"
     },
-    "added": [
-
-    ],
-    "removed": [
-
-    ],
-    "modified": [
-      "README.md"
-    ]
+    "added": [],
+    "removed": [],
+    "modified": ["README.md"]
   },
   "repository": {
     "id": 68474533,
@@ -69,7 +57,8 @@
     "full_name": "bkeepers-inc/test",
     "owner": {
       "name": "bkeepers-inc",
-      "email": null
+      "email": null,
+      "login": "bkeepers-inc"
     },
     "private": true,
     "html_url": "https://github.com/bkeepers-inc/test",
